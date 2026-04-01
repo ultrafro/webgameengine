@@ -381,17 +381,125 @@ var APP = {
 
 				console.log( 'Physics: Character controller created for', mesh.name );
 
-				// Setup animations if available
-				setupCharacterAnimations( mesh );
+			}
+
+		}
+
+		async function setupCharacterAnimations( mesh ) {
+
+			if ( ! characterGroup ) return;
+
+			// Check if this is an animated GLB character
+			var charData = characterGroup.userData.animatedCharacter;
+
+			if ( charData && charData.modelUrl ) {
+
+				// Load the model fresh in the player (editor scene doesn't preserve animations in JSON)
+				try {
+
+					var module = await import( '/examples/jsm/loaders/GLTFLoader.js' );
+					var loader = new module.GLTFLoader();
+
+					var gltf = await new Promise( function ( resolve, reject ) {
+						loader.load( charData.modelUrl, resolve, undefined, reject );
+					} );
+
+					var model = gltf.scene;
+					model.scale.setScalar( charData.scale || 1 );
+					model.position.y = charData.yOffset || 0;
+
+					model.traverse( function ( child ) {
+						if ( child.isMesh ) {
+							child.castShadow = true;
+							child.receiveShadow = true;
+						}
+					} );
+
+					// Find and remove the old model from characterGroup (keep the collider mesh)
+					var toRemove = [];
+					characterGroup.children.forEach( function ( child ) {
+						if ( child !== characterMesh && child.name !== 'PlayerBody' ) {
+							toRemove.push( child );
+						}
+					} );
+					toRemove.forEach( function ( child ) { characterGroup.remove( child ); } );
+
+					// Add the freshly loaded model
+					characterGroup.add( model );
+
+					// Set up real AnimationMixer
+					var realMixer = new THREE.AnimationMixer( model );
+					var clips = {};
+					var animMap = charData.animationMap || {};
+
+					gltf.animations.forEach( function ( clip ) {
+						clips[ clip.name ] = realMixer.clipAction( clip );
+					} );
+
+					// Find the right clips for each state
+					var idleClip = clips[ animMap.idle ] || clips[ 'Idle' ] || null;
+					var walkClip = clips[ animMap.walk ] || clips[ 'Walk' ] || clips[ 'Walking' ] || null;
+					var runClip = clips[ animMap.run ] || clips[ 'Run' ] || clips[ 'Running' ] || null;
+
+					// Start with idle
+					if ( idleClip ) idleClip.play();
+					var currentAction = idleClip;
+
+					animationMixer = {
+						mixer: realMixer,
+						clips: clips,
+						currentAction: currentAction,
+						state: 'idle',
+						setState: function ( state ) {
+
+							if ( this.state === state ) return;
+							this.state = state;
+
+							var nextAction = null;
+
+							if ( state === 'run' && runClip ) nextAction = runClip;
+							else if ( state === 'walk' && walkClip ) nextAction = walkClip;
+							else if ( idleClip ) nextAction = idleClip;
+
+							if ( nextAction && nextAction !== this.currentAction ) {
+
+								if ( this.currentAction ) {
+									this.currentAction.fadeOut( 0.2 );
+								}
+
+								nextAction.reset().fadeIn( 0.2 ).play();
+								this.currentAction = nextAction;
+
+							}
+
+						},
+						update: function ( delta ) {
+
+							this.mixer.update( delta );
+
+						}
+					};
+
+					console.log( 'Animations: Loaded', Object.keys( clips ).join( ', ' ), 'for', charData.modelName );
+
+				} catch ( e ) {
+
+					console.error( 'Failed to load character animations:', e );
+					setupProceduralAnimations();
+
+				}
+
+			} else {
+
+				setupProceduralAnimations();
 
 			}
 
 		}
 
-		function setupCharacterAnimations( mesh ) {
+		function setupProceduralAnimations() {
 
-			// Create procedural "animations" for the primitive character
-			// We'll bob and tilt the character to simulate movement
+			// Fallback procedural animations for primitive characters
 			animationMixer = {
 				time: 0,
 				state: 'idle',
@@ -404,15 +512,12 @@ var APP = {
 					this.time += delta;
 					if ( characterMesh ) {
 						if ( this.state === 'run' ) {
-							// Bob up and down while running
 							characterMesh.position.y = Math.sin( this.time * 12 ) * 0.05;
-							// Slight forward tilt
 							characterMesh.rotation.x = 0.1;
 						} else if ( this.state === 'walk' ) {
 							characterMesh.position.y = Math.sin( this.time * 8 ) * 0.03;
 							characterMesh.rotation.x = 0.05;
 						} else {
-							// Idle breathing
 							characterMesh.position.y = Math.sin( this.time * 2 ) * 0.02;
 							characterMesh.rotation.x = 0;
 						}
@@ -638,6 +743,11 @@ var APP = {
 
 			// Initialize physics
 			await initPhysics();
+
+			// Setup character animations (loads GLB model if needed)
+			if ( characterMesh ) {
+				await setupCharacterAnimations( characterMesh );
+			}
 
 			// Position camera behind character if we have one
 			if ( characterBody && camera ) {

@@ -7,8 +7,115 @@ import { RemoveObjectCommand } from './commands/RemoveObjectCommand.js';
 import { AddScriptCommand } from './commands/AddScriptCommand.js';
 import { SetMaterialColorCommand } from './commands/SetMaterialColorCommand.js';
 import { SetMaterialValueCommand } from './commands/SetMaterialValueCommand.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 
 function Bridge( editor ) {
+
+	const gltfLoader = new GLTFLoader();
+
+	// Known character models with their animation mappings
+	const CHARACTER_MODELS = {
+		'Soldier': {
+			url: '/assets/characters/Soldier.glb',
+			scale: 1.0,
+			yOffset: 0, // model's feet are at origin
+			animations: { idle: 'Idle', walk: 'Walk', run: 'Run' },
+			colliderRadius: 0.3,
+			colliderHalfHeight: 0.55
+		},
+		'Robot': {
+			url: '/assets/characters/RobotExpressive.glb',
+			scale: 0.5,
+			yOffset: 0,
+			animations: { idle: 'Idle', walk: 'Walking', run: 'Running', jump: 'Jump', dance: 'Dance' },
+			colliderRadius: 0.3,
+			colliderHalfHeight: 0.4
+		}
+	};
+
+	async function spawnAnimatedCharacter( params ) {
+
+		const modelName = params.model || 'Soldier';
+		const config = CHARACTER_MODELS[ modelName ];
+
+		if ( ! config ) throw new Error( 'Unknown model: ' + modelName );
+
+		const gltf = await new Promise( ( resolve, reject ) => {
+			gltfLoader.load( config.url, resolve, undefined, reject );
+		} );
+
+		const model = gltf.scene;
+		model.name = params.name || modelName;
+
+		// Scale model
+		model.scale.setScalar( config.scale );
+
+		// Enable shadows on all meshes
+		model.traverse( function ( child ) {
+
+			if ( child.isMesh ) {
+
+				child.castShadow = true;
+				child.receiveShadow = true;
+
+			}
+
+		} );
+
+		// Create a group to hold model + physics proxy
+		const group = new THREE.Group();
+		group.name = params.name || 'Player';
+		group.position.set(
+			params.position ? params.position.x : 0,
+			params.position ? params.position.y : 1.5,
+			params.position ? params.position.z : 0
+		);
+
+		// Add model to group
+		model.position.y = config.yOffset;
+		group.add( model );
+
+		// Create invisible physics collider mesh
+		const colliderGeo = new THREE.CapsuleGeometry( config.colliderRadius, config.colliderHalfHeight * 2, 4, 8 );
+		const colliderMat = new THREE.MeshBasicMaterial( { visible: false } );
+		const colliderMesh = new THREE.Mesh( colliderGeo, colliderMat );
+		colliderMesh.name = 'PlayerBody';
+		colliderMesh.position.y = config.colliderHalfHeight + config.colliderRadius;
+		colliderMesh.userData = {
+			physics: {
+				bodyType: 'kinematicCharacter',
+				collider: 'capsule',
+				radius: config.colliderRadius,
+				halfHeight: config.colliderHalfHeight
+			},
+			isPlayer: true
+		};
+		group.add( colliderMesh );
+
+		// Store animation data in group's userData for the player runtime
+		const animationNames = {};
+		gltf.animations.forEach( function ( clip ) {
+			animationNames[ clip.name ] = true;
+		} );
+
+		group.userData.animatedCharacter = {
+			modelName: modelName,
+			animationMap: config.animations,
+			availableAnimations: Object.keys( animationNames ),
+			// Store clips as JSON-serializable data won't work —
+			// instead store the model URL so player can reload
+			modelUrl: config.url,
+			scale: config.scale,
+			yOffset: config.yOffset
+		};
+
+		// Store animations on the model scene for the editor's animation panel
+		model.animations = gltf.animations;
+
+		editor.execute( new AddObjectCommand( editor, group ) );
+		return { uuid: group.uuid, name: group.name, animations: Object.keys( animationNames ) };
+
+	}
 
 	function handleMessage( event ) {
 
@@ -149,7 +256,23 @@ function Bridge( editor ) {
 
 				case 'spawnCharacter': {
 					const p = data.params;
-					// Create a group to hold the character parts
+
+					if ( p.model ) {
+
+						// Load a GLB model as character
+						spawnAnimatedCharacter( p ).then( function ( result ) {
+							response.data = result;
+							window.parent.postMessage( response, '*' );
+						} ).catch( function ( err ) {
+							response.success = false;
+							response.error = err.message;
+							window.parent.postMessage( response, '*' );
+						} );
+						return; // async — response sent later
+
+					}
+
+					// Primitive capsule fallback
 					const group = new THREE.Group();
 					group.name = p.name || 'Player';
 					group.position.set(
@@ -158,7 +281,6 @@ function Bridge( editor ) {
 						p.position ? p.position.z : 0
 					);
 
-					// Body (capsule)
 					const bodyGeo = new THREE.CapsuleGeometry( 0.3, 0.8, 4, 16 );
 					const bodyMat = new THREE.MeshStandardMaterial( { color: p.color || 0x4488ff } );
 					const body = new THREE.Mesh( bodyGeo, bodyMat );
@@ -175,7 +297,6 @@ function Bridge( editor ) {
 					};
 					group.add( body );
 
-					// Head (sphere)
 					const headGeo = new THREE.SphereGeometry( 0.22, 16, 12 );
 					const headMat = new THREE.MeshStandardMaterial( { color: p.headColor || 0x66aaff } );
 					const head = new THREE.Mesh( headGeo, headMat );
@@ -184,29 +305,16 @@ function Bridge( editor ) {
 					head.castShadow = true;
 					group.add( head );
 
-					// Eyes
 					const eyeGeo = new THREE.SphereGeometry( 0.05, 8, 6 );
 					const eyeMat = new THREE.MeshStandardMaterial( { color: 0xffffff, emissive: 0xffffff, emissiveIntensity: 0.3 } );
 					const leftEye = new THREE.Mesh( eyeGeo, eyeMat );
 					leftEye.name = 'LeftEye';
 					leftEye.position.set( -0.08, 0.68, -0.18 );
 					group.add( leftEye );
-
 					const rightEye = new THREE.Mesh( eyeGeo, eyeMat.clone() );
 					rightEye.name = 'RightEye';
 					rightEye.position.set( 0.08, 0.68, -0.18 );
 					group.add( rightEye );
-
-					// Pupils
-					const pupilGeo = new THREE.SphereGeometry( 0.025, 8, 6 );
-					const pupilMat = new THREE.MeshStandardMaterial( { color: 0x111111 } );
-					const leftPupil = new THREE.Mesh( pupilGeo, pupilMat );
-					leftPupil.position.set( -0.08, 0.68, -0.22 );
-					group.add( leftPupil );
-
-					const rightPupil = new THREE.Mesh( pupilGeo, pupilMat.clone() );
-					rightPupil.position.set( 0.08, 0.68, -0.22 );
-					group.add( rightPupil );
 
 					editor.execute( new AddObjectCommand( editor, group ) );
 					response.data = { uuid: group.uuid, name: group.name };

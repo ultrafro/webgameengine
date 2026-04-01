@@ -19,7 +19,9 @@ const DUMMY_ASSETS: AssetItem[] = [
   { name: "Ground Plane", category: "Environment", thumbnail: "🟫", type: "plane" },
   { name: "Pine Tree", category: "Nature", thumbnail: "🌲", type: "cylinder" },
   { name: "Rock", category: "Nature", thumbnail: "🪨", type: "sphere" },
-  { name: "Character", category: "Characters", thumbnail: "🧍", type: "capsule" },
+  { name: "Capsule Guy", category: "Characters", thumbnail: "🧍", type: "capsule" },
+  { name: "Soldier", category: "Characters", thumbnail: "🎖️", type: "model:Soldier" },
+  { name: "Robot", category: "Characters", thumbnail: "🤖", type: "model:Robot" },
   { name: "Sun Light", category: "Lights", thumbnail: "☀️", type: "directionalLight" },
   { name: "Ambient Light", category: "Lights", thumbnail: "💡", type: "ambientLight" },
   { name: "Sky Light", category: "Lights", thumbnail: "🌤️", type: "hemisphereLight" },
@@ -116,6 +118,17 @@ export default function Home() {
   // Add asset to scene
   const addAssetToScene = useCallback(
     (asset: AssetItem) => {
+      // Handle animated model characters
+      if (asset.type.startsWith("model:")) {
+        const modelName = asset.type.split(":")[1];
+        sendCommand("spawnCharacter", {
+          model: modelName,
+          name: "Player",
+          position: { x: 0, y: 2, z: 0 },
+        });
+        return;
+      }
+
       const params: Record<string, unknown> = {
         objectType: asset.type,
         name: asset.name,
@@ -125,9 +138,6 @@ export default function Home() {
       if (asset.type === "plane") {
         params.width = 20;
         params.height = 20;
-        params.userData = {
-          physics: { bodyType: "fixed", collider: "cuboid", friction: 0.8 },
-        };
       }
 
       sendCommand("addObject", params);
@@ -213,20 +223,34 @@ export default function Home() {
         castShadow: true,
         userData: { physics: { bodyType: "dynamic", collider: "sphere", radius: 0.5, restitution: 0.7 } },
       });
-      // Spawn character
+      // Spawn animated soldier character
+      await sendCommand("spawnCharacter", {
+        model: "Soldier",
+        name: "Player",
+        position: { x: 0, y: 2, z: 0 },
+      });
+      reply = "Game scene ready with animated Soldier! Type 'play' then use WASD to move, mouse to look, Space to jump, Shift to run.";
+    } else if (lower === "add character" || lower === "spawn character" || lower === "add capsule guy") {
       await sendCommand("spawnCharacter", {
         name: "Player",
-        position: { x: 0, y: 1.5, z: 0 },
+        position: { x: 0, y: 2, z: 0 },
         color: 0x4488ff,
       });
-      reply = "Game scene ready! Ground, lights, obstacles, and player character. Type 'play' then click the viewport and use WASD to move, mouse to look, Space to jump, Shift to run.";
-    } else if (lower === "add character" || lower === "spawn character") {
+      reply = "Capsule character spawned. Use 'play' to test WASD movement.";
+    } else if (lower === "add soldier" || lower === "spawn soldier") {
       await sendCommand("spawnCharacter", {
+        model: "Soldier",
         name: "Player",
-        position: { x: 0, y: 1.5, z: 0 },
-        color: 0x4488ff,
+        position: { x: 0, y: 2, z: 0 },
       });
-      reply = "Player character spawned with physics. Use 'play' to test WASD movement (click viewport for mouse look).";
+      reply = "Soldier character spawned with Idle/Walk/Run animations! Type 'play' to test.";
+    } else if (lower === "add robot" || lower === "spawn robot") {
+      await sendCommand("spawnCharacter", {
+        model: "Robot",
+        name: "Player",
+        position: { x: 0, y: 2, z: 0 },
+      });
+      reply = "Robot character spawned with animations! Type 'play' to test.";
     } else if (lower === "get scene" || lower === "export") {
       const scene = await sendCommand("getScene");
       reply = "Scene JSON exported. Check console for data.";
